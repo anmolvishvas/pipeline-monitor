@@ -45,20 +45,24 @@ const statusClass = (status) => {
 
     <div v-for="job in jobs" :key="job.id" class="job-card">
       <div class="job-header">
-        <div>
-          <h3>{{ job.name }}</h3>
-          <span :class="['badge', statusClass(job.status)]">
-            {{ job.status }}
-          </span>
+        <div class="job-title">
+            <h3>{{ job.name }}</h3>
+
+            <span v-if="job.retry_count > 0" class="retry-badge">
+                Retried {{ job.retry_count }}×
+            </span>
+
+            <span :class="['badge', statusClass(job.status)]">
+                {{ job.status }}
+            </span>
         </div>
 
         <div class="actions">
           <button 
-            v-if="role === 'operator' && job.status === 'queued'"
-            class="btn primary"
+            v-if="role === 'operator' && (job.status === 'queued' || job.status === 'failed')"
             @click="triggerJob(job)"
-          >
-            ▶ Trigger
+            >
+            ▶ {{ job.status === 'failed' ? 'Retry' : 'Trigger' }}
           </button>
 
           <button 
@@ -140,5 +144,15 @@ const statusClass = (status) => {
 .empty {
   text-align: center;
   color: #888;
+}
+
+.retry-badge {
+  display: inline-block;
+  background: purple;
+  color: white;
+  padding: 3px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  margin-left: 6px;
 }
 </style>
