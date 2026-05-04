@@ -8,4 +8,5 @@ urlpatterns = [
     path('jobs/<uuid:pk>/stages/', JobStagesView.as_view()),
     path('jobs/<uuid:pk>/summary/', JobSummaryView.as_view()),
     path('stages/<uuid:stage_id>/logs/', StageLogCreateView.as_view()),
+    path('me/', MeView.as_view()),
 ]

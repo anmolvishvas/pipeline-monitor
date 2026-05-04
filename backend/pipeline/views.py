@@ -1,50 +1,36 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
 
 from django.db import transaction
 from django.db.models import Count, Q, OuterRef, Subquery, Prefetch, Sum
-
 from django.utils import timezone
 
 from .models import Job, Stage, LogEvent
-from .serializers import (
-    JobCreateSerializer,
-    JobListSerializer,
-    LogEventSerializer
-)
-
+from .serializers import JobCreateSerializer, JobListSerializer, LogEventSerializer
 from .permissions import IsOperator, IsViewer
 
 import threading
 import time
 
 class JobListView(APIView):
-
     permission_classes = [IsViewer]
 
     def get(self, request):
         queryset = Job.objects.annotate(
             stage_count=Count('stages'),
-
-            error_count=Count(
-                'stages__logs',
-                filter=Q(stages__logs__level='error')
-            ),
-
+            error_count=Count('stages__logs', filter=Q(stages__logs__level='error')),
             current_stage=Subquery(
-                Stage.objects.filter(
-                    job=OuterRef('pk'),
-                    status='running'
-                ).values('name')[:1]
+                Stage.objects.filter(job=OuterRef('pk'), status='running')
+                .values('name')[:1]
             )
         )
 
         serializer = JobListSerializer(queryset, many=True)
         return Response(serializer.data)
-    
-class JobCreateView(APIView):
 
+
+class JobCreateView(APIView):
     permission_classes = [IsOperator]
 
     @transaction.atomic
@@ -57,9 +43,7 @@ class JobCreateView(APIView):
             created_by=request.user
         )
 
-        stages_data = serializer.validated_data['stages']
-
-        for stage in stages_data:
+        for stage in serializer.validated_data['stages']:
             Stage.objects.create(
                 job=job,
                 name=stage['name'],
@@ -67,6 +51,7 @@ class JobCreateView(APIView):
             )
 
         return Response({"id": job.id}, status=201)
+
 
 class JobTriggerView(APIView):
     permission_classes = [IsOperator]
@@ -91,17 +76,19 @@ class JobTriggerView(APIView):
 
         first_stage.status = 'running'
         first_stage.save()
+        import threading
+        threading.Thread(target=simulate_pipeline, args=(job.id,)).start()
 
         return Response({"status": "triggered"})
-    
-class JobStagesView(APIView):
 
+
+class JobStagesView(APIView):
     permission_classes = [IsViewer]
 
     def get(self, request, pk):
         job = Job.objects.get(pk=pk)
 
-        latest_logs_subquery = LogEvent.objects.filter(
+        latest_logs = LogEvent.objects.filter(
             stage=OuterRef('pk')
         ).order_by('-timestamp').values('pk')[:3]
 
@@ -109,7 +96,7 @@ class JobStagesView(APIView):
             Prefetch(
                 'logs',
                 queryset=LogEvent.objects.filter(
-                    pk__in=Subquery(latest_logs_subquery)
+                    pk__in=Subquery(latest_logs)
                 ).order_by('-timestamp')
             )
         )
@@ -124,7 +111,8 @@ class JobStagesView(APIView):
             })
 
         return Response(data)
-    
+
+
 class StageLogCreateView(APIView):
     permission_classes = [IsOperator]
 
@@ -135,33 +123,49 @@ class StageLogCreateView(APIView):
         level = request.data.get('level')
         message = request.data.get('message')
 
-        log = LogEvent.objects.create(
+        LogEvent.objects.create(
             stage=stage,
             level=level,
             message=message
         )
 
+        job = stage.job
+
         if level == 'error':
             stage.status = 'failed'
             stage.save()
 
-            job = stage.job
             job.status = job.compute_status()
             job.save()
 
-        elif level == 'info' and stage.status == 'pending':
-            stage.status = 'running'
-            stage.save()
+        elif level == 'info':
+            if stage.status == 'pending':
+                stage.status = 'running'
+                stage.save()
 
-            job = stage.job
-            job.status = job.compute_status()
-            job.save()
+                job.status = job.compute_status()
+                job.save()
+
+            elif stage.status == 'running':
+                stage.status = 'done'
+                stage.save()
+
+                next_stage = Stage.objects.filter(
+                    job=job,
+                    order__gt=stage.order
+                ).order_by('order').first()
+
+                if next_stage:
+                    next_stage.status = 'running'
+                    next_stage.save()
+                else:
+                    job.status = 'completed'
+                    job.save()
 
         return Response({"status": "log created"})
-    
+
 
 class JobSummaryView(APIView):
-
     permission_classes = [IsViewer]
 
     def get(self, request, pk):
@@ -169,9 +173,7 @@ class JobSummaryView(APIView):
 
         stages = Stage.objects.filter(job=job)
 
-        total_duration = stages.aggregate(
-            total=Sum('duration_ms')
-        )['total']
+        total_duration = stages.aggregate(total=Sum('duration_ms'))['total']
 
         error_count = LogEvent.objects.filter(
             stage__job=job,
@@ -186,15 +188,28 @@ class JobSummaryView(APIView):
             "total_duration": total_duration,
             "error_rate": error_rate
         })
-    
-def simulate_pipeline(job):
+
+
+class MeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        role = "operator" if request.user.username == "operator@test.com" else "viewer"
+        return Response({
+            "username": request.user.username,
+            "role": role
+        })
+
+def simulate_pipeline(job_id):
+    from .models import Job, Stage, LogEvent
+
+    job = Job.objects.get(pk=job_id)
     stages = job.stages.order_by('order')
 
     for stage in stages:
         stage.status = 'running'
         stage.save()
 
-        # simulate logs
         for i in range(3):
             LogEvent.objects.create(
                 stage=stage,
@@ -203,13 +218,13 @@ def simulate_pipeline(job):
             )
             time.sleep(2)
 
-        # simulate failure on 2nd stage
         if stage.name.lower() == "validate":
             LogEvent.objects.create(
                 stage=stage,
                 level="error",
                 message="Validation failed"
             )
+
             stage.status = 'failed'
             stage.save()
 
