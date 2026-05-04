@@ -1,13 +1,16 @@
 <script setup>
-import { ref, watch, onUnmounted } from 'vue'
+import { ref, watch, onUnmounted, nextTick } from 'vue'
 import api from '../api'
 
 const props = defineProps(['jobId'])
 
 const stages = ref([])
-const activeStages = ref([])
-const activePollingStage = ref(null)
-let interval = null
+const activeStageId = ref(null)
+
+const stopFn = ref(null)
+
+const stageErrors = ref({})
+const stageFlash = ref({})
 
 const fetchStages = async () => {
   const res = await api.get(`jobs/${props.jobId}/stages/`)
@@ -17,43 +20,74 @@ const fetchStages = async () => {
 fetchStages()
 
 const toggleStage = (id) => {
-  if (activeStages.value.includes(id)) {
-    activeStages.value = activeStages.value.filter(s => s !== id)
-
-    if (activePollingStage.value === id) {
-      activePollingStage.value = null
-    }
-  } else {
-    activeStages.value.push(id)
-    activePollingStage.value = id
-  }
+  activeStageId.value = activeStageId.value === id ? null : id
 }
 
-watch(activePollingStage, (newId) => {
-  if (interval) clearInterval(interval)
+watch(activeStageId, async (newId) => {
+  if (stopFn.value) {
+    stopFn.value()
+    stopFn.value = null
+  }
 
   if (!newId) return
 
-  interval = setInterval(async () => {
+  let interval = null
+  let cancelled = false
+
+  const poll = async () => {
+    if (cancelled) return
+
     const res = await api.get(`jobs/${props.jobId}/stages/`)
     const updated = res.data.find(s => s.id === newId)
 
     if (!updated) return
 
     const index = stages.value.findIndex(s => s.id === newId)
-    if (index !== -1) {
-      stages.value[index] = updated
+    const prevLogs = stages.value[index]?.logs || []
+
+    if (updated.status !== 'running') {
+      clearInterval(interval)
+      cancelled = true
     }
 
-    if (['done', 'failed'].includes(updated.status)) {
-      clearInterval(interval)
-      activePollingStage.value = null
+    const existingIds = new Set(prevLogs.map(l => l.id))
+    const newLogs = updated.logs.filter(l => !existingIds.has(l.id))
+
+    const container = document.getElementById(`logs-${newId}`)
+    const scrollTop = container?.scrollTop
+
+    stages.value[index] = {
+      ...updated,
+      logs: [...prevLogs, ...newLogs]
     }
-  }, 3000)
+
+    if (newLogs.some(l => l.level === 'error')) {
+      stageErrors.value[newId] = 'Error detected in stage!'
+
+      stageFlash.value[newId] = true
+      setTimeout(() => {
+        stageFlash.value[newId] = false
+      }, 800)
+    }
+
+    await nextTick()
+
+    if (container) {
+      container.scrollTop = scrollTop
+    }
+  }
+
+  interval = setInterval(poll, 5000)
+
+  stopFn.value = () => {
+    cancelled = true
+    clearInterval(interval)
+  }
+
 })
 
 onUnmounted(() => {
-  if (interval) clearInterval(interval)
+  if (stopFn.value) stopFn.value()
 })
 
 const statusClass = (status) => {
@@ -64,89 +98,106 @@ const statusClass = (status) => {
     failed: 'red'
   }[status] || 'gray'
 }
-
-const logClass = (level) => {
-  return {
-    info: 'log-info',
-    warning: 'log-warning',
-    error: 'log-error'
-  }[level] || 'log-info'
-}
 </script>
 
 <template>
   <div class="stages">
+
     <div v-for="stage in stages" :key="stage.id" class="stage">
 
       <div class="stage-header" @click="toggleStage(stage.id)">
         <div>
-          <span class="arrow">
-            {{ activeStages.includes(stage.id) ? '▼' : '▶' }}
+          <span>
+            {{ activeStageId === stage.id ? '▼' : '▶' }}
           </span>
           {{ stage.name }}
         </div>
 
-        <span :class="['status', statusClass(stage.status)]">
+        <span 
+          :class="[
+            'status',
+            statusClass(stage.status),
+            stageFlash[stage.id] ? 'flash' : ''
+          ]"
+        >
           {{ stage.status }}
         </span>
       </div>
 
-      <div v-if="activeStages.includes(stage.id)" class="logs">
+      <div v-if="stageErrors[stage.id]" class="alert">
+        ⚠ {{ stageErrors[stage.id] }}
+        <button @click="stageErrors[stage.id] = null">✖</button>
+      </div>
+
+      <div 
+        v-if="activeStageId === stage.id"
+        class="logs"
+        :id="'logs-' + stage.id"
+      >
         <div 
-          v-for="log in stage.logs" 
-          :key="log.id" 
-          :class="['log', logClass(log.level)]"
+          v-for="log in stage.logs"
+          :key="log.id"
+          class="log"
+          :class="{ error: log.level === 'error' }"
         >
           {{ log.message }}
         </div>
       </div>
 
     </div>
+
   </div>
 </template>
 
 <style scoped>
-.stages {
-  margin-top: 12px;
-  padding-left: 10px;
-}
-
 .stage {
   border-left: 2px solid #ddd;
   padding-left: 10px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
 .stage-header {
   display: flex;
   justify-content: space-between;
   cursor: pointer;
-  font-weight: 500;
 }
-
-.arrow {
-  margin-right: 6px;
-}
-
-.status {
-  font-size: 12px;
-}
-
-.gray { color: gray; }
-.orange { color: orange; }
-.green { color: green; }
-.red { color: red; }
 
 .logs {
+  max-height: 150px;
+  overflow-y: auto;
   margin-top: 8px;
-  font-size: 13px;
 }
 
 .log {
-  padding: 4px 0;
+  padding: 4px;
 }
 
-.log-info { color: #333; }
-.log-warning { color: orange; }
-.log-error { color: red; font-weight: bold; }
+.log.error {
+  color: red;
+  font-weight: bold;
+}
+
+.alert {
+  background: #ffe0e0;
+  color: red;
+  padding: 6px;
+  margin-top: 6px;
+  display: flex;
+  justify-content: space-between;
+}
+
+.gray { color: gray }
+.orange { color: orange }
+.green { color: green }
+.red { color: red }
+
+.flash {
+  animation: blink 0.6s ease;
+}
+
+@keyframes blink {
+  0% { opacity: 1 }
+  50% { opacity: 0.2 }
+  100% { opacity: 1 }
+}
 </style>
