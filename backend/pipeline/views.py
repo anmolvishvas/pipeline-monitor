@@ -14,7 +14,11 @@ from .serializers import (
     LogEventSerializer
 )
 
+from .permissions import IsOperator, IsViewer
+
 class JobListView(APIView):
+
+    permission_classes = [IsViewer]
 
     def get(self, request):
         queryset = Job.objects.annotate(
@@ -37,6 +41,8 @@ class JobListView(APIView):
         return Response(serializer.data)
     
 class JobCreateView(APIView):
+
+    permission_classes = [IsOperator]
 
     @transaction.atomic
     def post(self, request):
@@ -61,6 +67,8 @@ class JobCreateView(APIView):
 
 class JobTriggerView(APIView):
 
+    permission_classes = [IsOperator]
+
     @transaction.atomic
     def post(self, request, pk):
         job = Job.objects.select_for_update().get(pk=pk)
@@ -82,6 +90,8 @@ class JobTriggerView(APIView):
         return Response({"status": "triggered"})
     
 class JobStagesView(APIView):
+
+    permission_classes = [IsViewer]
 
     def get(self, request, pk):
         job = Job.objects.get(pk=pk)
@@ -112,6 +122,8 @@ class JobStagesView(APIView):
     
 class StageLogCreateView(APIView):
 
+    permission_classes = [IsOperator]
+
     @transaction.atomic
     def post(self, request, stage_id):
         stage = Stage.objects.select_for_update().get(pk=stage_id)
@@ -134,6 +146,8 @@ class StageLogCreateView(APIView):
     
 
 class JobSummaryView(APIView):
+
+    permission_classes = [IsViewer]
 
     def get(self, request, pk):
         job = Job.objects.get(pk=pk)
