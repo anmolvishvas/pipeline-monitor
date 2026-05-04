@@ -16,6 +16,9 @@ from .serializers import (
 
 from .permissions import IsOperator, IsViewer
 
+import threading
+import time
+
 class JobListView(APIView):
 
     permission_classes = [IsViewer]
@@ -66,7 +69,6 @@ class JobCreateView(APIView):
         return Response({"id": job.id}, status=201)
 
 class JobTriggerView(APIView):
-
     permission_classes = [IsOperator]
 
     @transaction.atomic
@@ -74,20 +76,15 @@ class JobTriggerView(APIView):
         job = Job.objects.select_for_update().get(pk=pk)
 
         if job.status != 'queued':
-            return Response(
-                {"error": "Job not in queued state"},
-                status=400
-            )
+            return Response({"error": "Not queued"}, status=400)
 
         job.status = 'running'
         job.started_at = timezone.now()
         job.save()
 
-        first_stage = job.stages.order_by('order').first()
-        first_stage.status = 'running'
-        first_stage.save()
+        threading.Thread(target=simulate_pipeline, args=(job,)).start()
 
-        return Response({"status": "triggered"})
+        return Response({"status": "started"})
     
 class JobStagesView(APIView):
 
@@ -171,3 +168,39 @@ class JobSummaryView(APIView):
             "total_duration": total_duration,
             "error_rate": error_rate
         })
+    
+def simulate_pipeline(job):
+    stages = job.stages.order_by('order')
+
+    for stage in stages:
+        stage.status = 'running'
+        stage.save()
+
+        # simulate logs
+        for i in range(3):
+            LogEvent.objects.create(
+                stage=stage,
+                level="info",
+                message=f"{stage.name} step {i+1}"
+            )
+            time.sleep(2)
+
+        # simulate failure on 2nd stage
+        if stage.name.lower() == "validate":
+            LogEvent.objects.create(
+                stage=stage,
+                level="error",
+                message="Validation failed"
+            )
+            stage.status = 'failed'
+            stage.save()
+
+            job.status = job.compute_status()
+            job.save()
+            return
+
+        stage.status = 'done'
+        stage.save()
+
+    job.status = 'completed'
+    job.save()
