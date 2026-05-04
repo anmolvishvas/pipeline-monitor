@@ -75,16 +75,24 @@ class JobTriggerView(APIView):
     def post(self, request, pk):
         job = Job.objects.select_for_update().get(pk=pk)
 
-        if job.status != 'queued':
-            return Response({"error": "Not queued"}, status=400)
+        if job.status not in ['queued', 'failed']:
+            return Response({"error": "Invalid state"}, status=400)
+
+        if job.status == 'failed':
+            job.retry_count += 1
 
         job.status = 'running'
         job.started_at = timezone.now()
         job.save()
 
-        threading.Thread(target=simulate_pipeline, args=(job,)).start()
+        first_stage = job.stages.order_by('order').first()
+        if not first_stage:
+            return Response({"error": "Job has no stages"}, status=400)
 
-        return Response({"status": "started"})
+        first_stage.status = 'running'
+        first_stage.save()
+
+        return Response({"status": "triggered"})
     
 class JobStagesView(APIView):
 
@@ -118,20 +126,22 @@ class JobStagesView(APIView):
         return Response(data)
     
 class StageLogCreateView(APIView):
-
     permission_classes = [IsOperator]
 
     @transaction.atomic
-    def post(self, request, stage_id):
-        stage = Stage.objects.select_for_update().get(pk=stage_id)
+    def post(self, request, pk):
+        stage = Stage.objects.select_related('job').get(pk=pk)
+
+        level = request.data.get('level')
+        message = request.data.get('message')
 
         log = LogEvent.objects.create(
             stage=stage,
-            level=request.data.get('level'),
-            message=request.data.get('message')
+            level=level,
+            message=message
         )
 
-        if log.level == 'error':
+        if level == 'error':
             stage.status = 'failed'
             stage.save()
 
@@ -139,7 +149,15 @@ class StageLogCreateView(APIView):
             job.status = job.compute_status()
             job.save()
 
-        return Response({"id": log.id}, status=201)
+        elif level == 'info' and stage.status == 'pending':
+            stage.status = 'running'
+            stage.save()
+
+            job = stage.job
+            job.status = job.compute_status()
+            job.save()
+
+        return Response({"status": "log created"})
     
 
 class JobSummaryView(APIView):

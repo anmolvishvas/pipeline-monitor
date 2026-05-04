@@ -20,16 +20,21 @@ class Job(models.Model):
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
 
+    retry_count = models.IntegerField(default=0)
+
     def compute_status(self):
         stages = self.stages.all()
 
-        if stages.filter(status='failed').exists():
+        if any(s.status == 'failed' for s in stages):
             return 'failed'
-        if stages.filter(status='running').exists():
+
+        if all(s.status == 'done' for s in stages):
+            return 'completed'
+
+        if any(s.status == 'running' for s in stages):
             return 'running'
-        if stages.filter(status='pending').exists():
-            return 'queued'
-        return 'completed'
+
+        return 'queued'
 
 
 class Stage(models.Model):

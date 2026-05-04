@@ -16,6 +16,7 @@ class JobListSerializer(serializers.ModelSerializer):
     stage_count = serializers.IntegerField()
     error_count = serializers.IntegerField()
     current_stage = serializers.CharField(allow_null=True)
+    retry_count = serializers.IntegerField()
 
     class Meta:
         model = Job
@@ -25,7 +26,8 @@ class JobListSerializer(serializers.ModelSerializer):
             'status',
             'stage_count',
             'error_count',
-            'current_stage'
+            'current_stage',
+            'retry_count',
         ]
 
 
